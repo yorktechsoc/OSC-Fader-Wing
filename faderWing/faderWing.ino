@@ -80,7 +80,6 @@ static const int MOTOR_PINS[] = {5,23, 3,2,  6,7,  9,8,  10,15}; // static const
 #define MENU_ENT_BUTTON  24
 #define MENU_DOWN_BUTTON  27
 
-
 // constants and macros
 #define SUBSCRIBE		1
 #define UNSUBSCRIBE	0
@@ -99,8 +98,8 @@ bool FIVE_OFFSET = false;
 #define FADER_UPDATE_RATE_MS	40 // update each 40ms
 #define BUTTON_DEBOUNCE_RATE_MS 50
 
-#define FADER_ACCURACY 30 //% 3
-#define MOTOR_ACCURACY 20 //Out of 1024
+#define FADER_ACCURACY 3 //%
+#define MOTOR_ACCURACY 10 //Out of 1024
 
 uint32_t updateTime; 
 
@@ -127,13 +126,11 @@ struct Fader {
   int16_t EOSPos;
   int16_t faderMin;
   int16_t faderMax;
-  int16_t faderResolution;
 	int16_t analogLast;
 	int16_t btnLast;
 	String analogPattern;
 	String btnPattern;
 	uint32_t updateTime;
-  bool sending;
 	} fader1, fader2, fader3, fader4, fader5;
 struct Button {
   uint8_t btnPin;
@@ -219,25 +216,15 @@ void initEOS() {
  * @param msg OSC message
  */
 void sendFader(struct Fader* fader, float pos,bool fiveOffset) {
-  
-    if (fader->moving){
-      //Stop moving
-      digitalWrite(fader->motorUpPin,LOW);
-      digitalWrite(fader->motorDownPin,LOW);
-      delay(5);
-      fader->moving = false;
-    }
-    if (fiveOffset == FIVE_OFFSET) {
-        fader->moving = true;
-        motorGoTo(fader,int(pos*fader->faderResolution));
-    }
-    if (fiveOffset) {
-      fader->fiveOffsetEOSPos = int(pos*fader->faderResolution);
-      } else {
-      fader->EOSPos = int(pos*fader->faderResolution);
-      }
+  if (fiveOffset == FIVE_OFFSET) {
+    motorGoTo(fader,int(pos*1024));
+  }
+  if (fiveOffset) {
+    fader->fiveOffsetEOSPos = int(pos*1024);
+  } else {
+    fader->EOSPos = int(pos*1024);
+  }
 }
-
 void parseFaderUpdate1(OSCMessage& msg, int addressOffset) {
   sendFader(&fader1,msg.getOSCData(0)->getFloat(),false);
 }
@@ -298,7 +285,6 @@ void parseOSCMessage(String& msg) {
   oscmsg.route("/eos/fader/1/9", parseFaderUpdateO4);
   oscmsg.route("/eos/fader/1/10", parseFaderUpdateO5);
 }
-
 /**
  * @brief initialise the fader
  *
@@ -315,8 +301,7 @@ void initFader(struct Fader* fader, uint8_t number, uint8_t analogPin, uint8_t b
   fader->motorUpPin = motorUpPin;
   fader->motorDownPin = motorDownPin;
   fader->moving = false;
-  fader->sending = false;
-  fader->movingTarget = 512;
+  fader->movingTarget = 0;
   fader->fiveOffsetEOSPos = 0;
   fader->EOSPos = 0;
   fader->faderMin = 0;
@@ -325,17 +310,19 @@ void initFader(struct Fader* fader, uint8_t number, uint8_t analogPin, uint8_t b
   digitalWrite(motorUpPin,HIGH);
   digitalWrite(motorDownPin,LOW); 
   delay(500);
-  digitalWrite(motorUpPin, LOW);
-  digitalWrite(motorDownPin,LOW);
-  fader->faderMax = analogRead(analogPin);
-  delay(25);
+  digitalWrite(motorUpPin, HIGH);
+  digitalWrite(motorDownPin,HIGH);
+  fader->faderMax = analogRead(analogPin);   
   digitalWrite(motorUpPin, LOW);
   digitalWrite(motorDownPin,HIGH);
   delay(500);
+  digitalWrite(motorUpPin, HIGH);
+  digitalWrite(motorDownPin,HIGH);
+  fader->faderMin = analogRead(analogPin);
   digitalWrite(motorUpPin, LOW);
   digitalWrite(motorDownPin,LOW);
-  fader->faderMin = analogRead(analogPin);
-  fader->faderResolution = fader->faderMax - fader->faderMin;
+
+ 
 	fader->analogLast = 0xFFFF; // forces an osc output of the fader
 	pinMode(fader->btnPin, INPUT_PULLUP);
   fader->btnLast = digitalRead(fader->btnPin);
@@ -350,24 +337,12 @@ void initButton(struct Button* button, uint8_t btnPin) {
   button->updateTime = millis();
 }
 
-void resetFader(struct Fader* fader){
-  fader->sending = false;
-  digitalWrite(fader->motorUpPin,LOW);
-  digitalWrite(fader->motorDownPin,LOW);
-  fader->moving = true; 
-}
 /*
  * Change the layer the buttons are on
  */
 void changeLayer(uint8_t newPage, bool fiveOffset, struct Fader* fader1,struct Fader* fader2,struct Fader* fader3,struct Fader* fader4,struct Fader* fader5) {
     FADER_PAGE = newPage;
     FIVE_OFFSET = fiveOffset;
-    resetFader(fader1);
-    resetFader(fader2);
-    resetFader(fader3);
-    resetFader(fader4);
-    resetFader(fader5);
-
     fader1->number = (fiveOffset ? 6 : 1);
     fader1->analogPattern = EOS_FADER + '/' + String(FADER_BANK) + '/' + String(fader1->number);
     fader1->btnPattern = EOS_FADER + '/' + String(FADER_BANK) + '/' + String(fader1->number) + "/fire";
@@ -406,87 +381,68 @@ void changeLayer(uint8_t newPage, bool fiveOffset, struct Fader* fader1,struct F
   */
 void motorGoTo(struct Fader* fader, int pos) {
   //Instruct the motor to go somewhere
-    if (pos < fader->faderMin || pos < 0.05 *fader->faderResolution) {
-      pos = fader->faderMin + 0.02*fader->faderResolution;
-    } else if (pos > fader->faderMax || pos > 0.95 *fader->faderResolution) {
-      pos = fader->faderMax - 0.02*fader->faderResolution ;
-    }
-    fader->movingTarget = pos; 
-    fader->moving = true;
+  if (pos < fader->faderMin) {
+    pos = fader->faderMin;
+  } else if (pos > fader->faderMax) {
+    pos = fader->faderMax;
+  }
+  fader->movingTarget = pos; 
+  fader->moving = true;
 }
 void moveMotor(struct Fader* fader) {
   //Actually move the motor in the loop
   if (fader->moving) {
-    if (analogRead(fader->analogPin) == fader->faderMax || analogRead(fader->analogPin) == fader->faderMin) {
+    if (analogRead(fader->analogPin) < (fader->movingTarget+MOTOR_ACCURACY) && analogRead(fader->analogPin) > (fader->movingTarget-MOTOR_ACCURACY)) {
       //Stop moving
       digitalWrite(fader->motorUpPin,LOW);
       digitalWrite(fader->motorDownPin,LOW);
-      delay(50); // ensure it's stopped
-      fader->moving = false; 
-      }
-    else if (analogRead(fader->analogPin) < (fader->movingTarget+MOTOR_ACCURACY) && analogRead(fader->analogPin) > (fader->movingTarget-MOTOR_ACCURACY)) {
-      //Stop moving
+      delay(5);
       digitalWrite(fader->motorUpPin,LOW);
       digitalWrite(fader->motorDownPin,LOW);
-      delay(50); // ensure it's stopped
-      fader->moving = false; 
-      } 
-    else if (analogRead(fader->analogPin) > (fader->movingTarget)) {
+      fader->moving = false;
+    } else if (analogRead(fader->analogPin) > (fader->movingTarget+MOTOR_ACCURACY)) {
       digitalWrite(fader->motorUpPin,LOW);
-      analogWrite(fader->motorDownPin, 150);
-    } else if (analogRead(fader->analogPin) < (fader->movingTarget)) {
-      analogWrite(fader->motorUpPin, 150);
+      digitalWrite(fader->motorDownPin,HIGH);
+    } else if (analogRead(fader->analogPin) < (fader->movingTarget-MOTOR_ACCURACY)) {
+      digitalWrite(fader->motorUpPin,HIGH);
       digitalWrite(fader->motorDownPin,LOW);
     }
   }
 }
 void updateFader(struct Fader* fader) {
-  if (!fader->moving){
-    if((fader->updateTime + FADER_UPDATE_RATE_MS) < millis()) {
-      int16_t raw = analogRead(fader->analogPin);
-      int16_t resolution = fader->faderResolution;
-      if (raw < fader->faderMin){
-        fader->faderMin = raw;
-        fader->faderResolution = fader->faderMax - fader->faderMin;
-      }
-      if (raw > fader->faderMax){
-        fader->faderMax = raw;
-        fader->faderResolution = fader->faderMax - fader->faderMin;
+	if((fader->updateTime + FADER_UPDATE_RATE_MS) < millis()) {
+		int16_t raw = analogRead(fader->analogPin) >> 2; // reduce to 8 bit
+		if ((raw-FADER_ACCURACY >= fader->analogLast) || (raw+FADER_ACCURACY <= fader->analogLast)) {
+			float value = ((raw) * 1.0 / 256) / 1.0; // normalize to values between 0.0 and 1.0
+			fader->analogLast = raw;
 
-      }
-      if ((raw-FADER_ACCURACY >= fader->analogLast) || (raw+FADER_ACCURACY <= fader->analogLast)) {
-        float value = ((((raw) * 1.0)) / resolution); // normalize to values between 0.0 and 1.0 
-        fader->analogLast = raw;
+      if (value > 0.97) value = 1.0; //Normalise top values
+      else if (value < 0.04) value = 0.0; //Normalise low values
+      
+			OSCMessage faderUpdate(fader->analogPattern.c_str());
+			faderUpdate.add(value);
+			SLIPSerial.beginPacket();
+			faderUpdate.send(SLIPSerial);
+			SLIPSerial.endPacket();
+		}
 
-        if (value > 0.97) value = (float) 1.0; //Normalise top values
-        else if (value < 0.04) value = (float) 0.0; //Normalise low values
-        fader->sending = true;
+		if((digitalRead(fader->btnPin)) != fader->btnLast) {
+			OSCMessage btnUpdate(fader->btnPattern.c_str());
+			if(fader->btnLast == LOW) {
+				fader->btnLast = HIGH;
+				btnUpdate.add(EDGE_DOWN);
+			}
+			else {
+				fader->btnLast = LOW;
+				btnUpdate.add(EDGE_UP);
+			}
+			SLIPSerial.beginPacket();
+			btnUpdate.send(SLIPSerial);
+			SLIPSerial.endPacket();
+		}
 
-        OSCMessage faderUpdate(fader->analogPattern.c_str());
-        faderUpdate.add(value);
-        SLIPSerial.beginPacket();
-        faderUpdate.send(SLIPSerial);
-        SLIPSerial.endPacket();
-      }
-
-      if((digitalRead(fader->btnPin)) != fader->btnLast) {
-        OSCMessage btnUpdate(fader->btnPattern.c_str());
-        if(fader->btnLast == LOW) {
-          fader->btnLast = HIGH;
-          btnUpdate.add(EDGE_DOWN);
-        }
-        else {
-          fader->btnLast = LOW;
-          btnUpdate.add(EDGE_UP);
-        }
-        SLIPSerial.beginPacket();
-        btnUpdate.send(SLIPSerial);
-        SLIPSerial.endPacket();
-      }
-
-      fader->updateTime = millis();
-    }
-  }
+		fader->updateTime = millis();
+	}
 }
 
 void updateButton(struct Button* btn, int btnType) {
@@ -513,6 +469,8 @@ void updateButton(struct Button* btn, int btnType) {
     btn->updateTime = millis();
   }
 }
+
+
 
 /**
  * @brief setup arduino
@@ -573,6 +531,7 @@ void setup() {
   lcd.print("     Ready      ");
 }
 
+
 bool powerBlock = false; //Should the logic be blocked because of low power
 void loop() {
   if (analogRead(0) < 1023) { //Needs a big old PSU at least 2A (ideally 9v) to deliver enough beans for the motors so double check that we have a PSU plugged in
@@ -598,8 +557,8 @@ void loop() {
 		while (size--) curMsg += (char)(SLIPSerial.read());
 		}
 	if (SLIPSerial.endofPacket()) {
-    lastMessageRxTime = millis();
 		parseOSCMessage(curMsg);
+		lastMessageRxTime = millis();
 		// We only care about the ping if we haven't heard recently
 		// Clear flag when we get any traffic
 		timeoutPingSent = false;
