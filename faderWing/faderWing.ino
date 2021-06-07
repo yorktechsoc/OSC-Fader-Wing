@@ -130,6 +130,7 @@ struct Fader {
   int16_t faderResolution;
 	int16_t analogLast;
 	int16_t btnLast;
+  unsigned long motorStartTime;
 	String analogPattern;
 	String btnPattern;
 	uint32_t updateTime;
@@ -219,13 +220,18 @@ void initEOS() {
  * @param msg OSC message
  */
 void sendFader(struct Fader* fader, float pos,bool fiveOffset) {
-  
     if (fader->moving){
       //Stop moving
       digitalWrite(fader->motorUpPin,LOW);
       digitalWrite(fader->motorDownPin,LOW);
       delay(5);
       fader->moving = false;
+    }
+
+    if (pos <= 0.01){
+      pos = fader->faderMin/fader->faderResolution;
+    } else if (pos >= 0.99){
+      pos = fader->faderMax/fader->faderResolution;
     }
     if (fiveOffset == FIVE_OFFSET) {
         fader->moving = true;
@@ -319,6 +325,7 @@ void initFader(struct Fader* fader, uint8_t number, uint8_t analogPin, uint8_t b
   fader->movingTarget = 512;
   fader->fiveOffsetEOSPos = 0;
   fader->EOSPos = 0;
+  fader->motorStartTime = 0;
   fader->faderMin = 0;
   fader->faderMax = 1024;
   //Calibrate Fader
@@ -406,13 +413,14 @@ void changeLayer(uint8_t newPage, bool fiveOffset, struct Fader* fader1,struct F
   */
 void motorGoTo(struct Fader* fader, int pos) {
   //Instruct the motor to go somewhere
-    if (pos < fader->faderMin || pos < 0.05 *fader->faderResolution) {
-      pos = fader->faderMin + 0.02*fader->faderResolution;
-    } else if (pos > fader->faderMax || pos > 0.95 *fader->faderResolution) {
-      pos = fader->faderMax - 0.02*fader->faderResolution ;
+    fader->moving = true;
+    fader->motorStartTime = millis();
+    if (pos < fader->faderMin) {
+      pos = fader->faderMin+MOTOR_ACCURACY;
+    } else if (pos > fader->faderMax) {
+      pos = fader->faderMax-MOTOR_ACCURACY;
     }
     fader->movingTarget = pos; 
-    fader->moving = true;
 }
 void moveMotor(struct Fader* fader) {
   //Actually move the motor in the loop
@@ -437,6 +445,13 @@ void moveMotor(struct Fader* fader) {
     } else if (analogRead(fader->analogPin) < (fader->movingTarget)) {
       analogWrite(fader->motorUpPin, 150);
       digitalWrite(fader->motorDownPin,LOW);
+    }
+    else if (millis() - fader->motorStartTime > 250){
+      digitalWrite(fader->motorUpPin,LOW);
+      digitalWrite(fader->motorDownPin,LOW);
+      delay(50); // ensure it's stopped
+      fader->moving = false; 
+      updateFader(fader);
     }
   }
 }
